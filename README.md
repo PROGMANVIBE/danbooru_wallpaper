@@ -58,7 +58,7 @@ Download the release folder or compile the application using:
 PowerShell
 python -m PyInstaller --noconfirm --onefile --noconsole --name "DanbooruWallpaper" --add-data "index.html;." --add-data "project.json;." --hidden-import webview --hidden-import pystray --hidden-import PIL danbooru_service.py
 
-Place danbooru_service.exe in a dedicated directory on your computer.
+Alternatively, you can change "--onefile" to "--onedir" to compile it with a full list of internals instead of just getting the executable. 
 
 Launch danbooru_service.exe.
 
