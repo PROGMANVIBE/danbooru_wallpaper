@@ -119,7 +119,7 @@ window, what triggers it, and whether it indicates normal operation or an error.
 - What it means: The Python program is actively contacting the Danbooru website to download a new page of up to 100 images.
 - When it happens: Roughly every 2 to 3 minutes when the application runs low on images and needs a fresh batch from the internet.
 
-[FETCH] Fetched and shuffled <N> images (Page <P>) for '<search_tags>'.
+[FETCH] Fetched and shuffled # of images (Page #) for '<search_tags>'.
 - What it means: A success message! Python received the 100 images from Danbooru, threw away any videos/invalid files, leaving <N> valid images. It then shuffled them so they appear in a random order on your wallpaper.
 - When it happens: Exactly 1 to 2 seconds after the [API] Requesting Page... log.
 
