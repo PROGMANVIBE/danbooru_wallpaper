@@ -24,7 +24,7 @@ A standalone Windows app that streams Danbooru art and GIFs to your desktop. Pow
 
 # HOW TO USE THE PROGRAM
 
-**Searching Tags**: Type any standard Danbooru tag combination into the search bar (the default search is: scenery no_humans order:score) and press Enter to queue the search.
+**Searching Tags**: Type any standard Danbooru tag combination into the search bar (the default search is: scenery no_humans order:score) and press Enter to queue the search. Highly suggested to have a paid account in order to have more search tags and API requests.
 
 **Immediate Refresh**: Press Shift + Enter in the input field or click the refresh button (⟳) on the bar to immediately clear the image buffer, increment the search epoch, and fetch new images.
 
