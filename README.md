@@ -79,7 +79,7 @@ API Key:
 -------------------------------
 # Your API key is like your password. Anyone who has it has full access to your account. Don't give your API key to apps or people you don't trust, and don't post your API key in public locations.
 
-The application will encrypt your API key while at rest using the native Windows Data Protection API (DPAPI via CryptProtectData / CryptUnprotectData in ctypes) so only your logged-in Windows user account on that specific machine can decrypt it. 
+The application will encrypt your API key while at rest using the native Windows Data Protection API (DPAPI via CryptProtectData / CryptUnprotectData in ctypes) so only your logged-in Windows user account on that specific machine can decrypt it. The saved credentials and settings can be found in your AppData (C:\Users\<Current_User>\AppData\Roaming) if it needs to be deleted at any time. 
 
 Enter these three values (Username, User ID, and API Key) into the program setup dialog when prompted.
 
