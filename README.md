@@ -1,6 +1,10 @@
 # Danbooru Wallpaper Application
 A standalone Windows app that streams Danbooru art and GIFs to your desktop. Powered by an authenticated local proxy to bypass rate limits, it features a floating search widget with live tag autocomplete, bookmarks, smooth media caching, and tray controls.
 
+## Note: 
+**Free Danbooru Account Limitation**
+This application designed for paid accounts and defaults to three tags (scenery no_humans order:score). Free Danbooru accounts only permit up to two tags per request, which will cause search errors and a black screen (because there are no images to show). If you are on a free account, delete at least one tag and refresh.
+
 # FEATURES
 
 **Floating Desktop Search Bar**: A movable on-screen search box that lets you query Danbooru tags directly without opening a web browser.
