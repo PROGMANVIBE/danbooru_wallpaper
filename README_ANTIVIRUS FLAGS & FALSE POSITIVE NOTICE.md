@@ -1,3 +1,8 @@
+---
+layout: page
+title: ANTIVIRUS NOTICE
+---
+
 # ANTIVIRUS FLAGS & FALSE POSITIVE NOTICE
 
 When scanning the compiled executable (.exe) on VirusTotal, a few antivirus engines may trigger detection flags. 
