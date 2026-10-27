@@ -1,0 +1,912 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Danbooru Infinite Animated Scroll & Polaroid Collage</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background-color: #0b0b0d;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    }
+    #collageBaseCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 0;
+      display: none;
+    }
+    #stage {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      contain: strict;
+      perspective: 1200px;
+      z-index: 1;
+    }
+
+    /* --- Scrolling Slideshow Item --- */
+    .slide-item {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100vh;
+      width: auto;
+      max-width: none;
+      display: block;
+      will-change: transform;
+      user-select: none;
+      pointer-events: none;
+      image-rendering: -webkit-optimize-contrast;
+    }
+
+    /* --- Polaroid Collage Item --- */
+    .polaroid-item {
+      position: absolute;
+      top: 0;
+      left: 0;
+      background-color: #ffffff;
+      padding: 12px 12px 34px 12px;
+      border-radius: 3px;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.35);
+      transform-origin: center center;
+      user-select: none;
+      pointer-events: none;
+    }
+    .polaroid-item.falling {
+      will-change: transform, opacity;
+      box-shadow: 0 32px 64px rgba(0, 0, 0, 0.75), 0 8px 20px rgba(0, 0, 0, 0.45);
+    }
+    .polaroid-img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      user-select: none;
+      pointer-events: none;
+      background-color: #111;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="collageBaseCanvas"></canvas>
+  <div id="stage"></div>
+
+  <script>
+    const stage = document.getElementById('stage');
+    const collageBaseCanvas = document.getElementById('collageBaseCanvas');
+    const collageCtx = collageBaseCanvas.getContext('2d');
+
+    // --- Configurable Defaults (Overridden by Wallpaper Engine Sidebar / project.json) ---
+    let DISPLAY_MODE = 'scroll';      // 'scroll' | 'collage'
+    let SCROLL_DIRECTION = 'left';    // 'left' | 'right'
+    let SCROLL_SPEED = 120;           // Pixels per second
+    let GAP = 12;                     // Space between scrolling images in pixels
+
+    let COLLAGE_DROP_SPEED = 1.0;     // Speed multiplier (0.2x to 4.0x)
+    let COLLAGE_MIN_SIZE = 220;       // Minimum polaroid target dimension (px)
+    let COLLAGE_MAX_SIZE = 440;       // Maximum polaroid target dimension (px)
+
+    // --- Shared Queue & Parallel Preloader State ---
+    const PRELOAD_BUFFER_TARGET = 12; // Decoded, ready-to-render images kept in RAM
+    const MAX_CONCURRENT_LOADS = 4;   // Parallel HTTP image downloads
+    const MIN_API_COOLDOWN_MS = 3000; // Minimum 3s cooldown between /api requests
+    const LOW_QUEUE_THRESHOLD = 15;   // Only request /api when postQueue drops below 15
+
+    let postQueue = [];               // Raw post metadata from /api
+    let readyImageQueue = [];         // Preloaded { img, aspect, naturalW, naturalH }
+    let inFlightImages = new Set();   // Active Image() instances currently downloading
+    let activePreloadCount = 0;
+    let preloadGeneration = 1;
+    let isFetching = false;
+    let nextAllowedFetchTime = 0;
+    let consecutiveEmptyFetches = 0;
+    let currentEpoch = null;
+    let lastTime = performance.now();
+
+    // --- Scroll Mode State ---
+    let activeItems = [];
+
+    // --- Collage Mode State & Hybrid Canvas-Baking Tuning ---
+    const POLAROID_PAD_SIDE = 12;
+    const POLAROID_PAD_TOP = 12;
+    const POLAROID_PAD_BOTTOM = 34;
+
+    const MAX_LIVE_COLLAGE_DOM = 30;  // Maximum live DOM Polaroids before baking older ones to canvas
+    const OCCLUDED_GRACE_DROPS = 4;   // Drops a 100%-covered image stays before baking & DOM removal
+    const COVERAGE_INSET_PX = 8;      // Inset margin so edge overlaps don't count as full coverage
+
+    let collageItems = [];
+    let fallingItems = [];
+    let timeSinceLastDrop = 999;
+    let nextZIndex = 1;
+    let nextPolaroidId = 1;
+
+    // High-resolution 2D Screen Coverage Grid (5,184 cells)
+    const GRID_COLS = 96;
+    const GRID_ROWS = 54;
+    const TOTAL_GRID_CELLS = GRID_COLS * GRID_ROWS;
+    let coverageGrid = new Int32Array(TOTAL_GRID_CELLS);
+    let coveredCellCount = 0;
+    let screenFullyCovered = false;
+
+    function resizeCollageCanvas(preserveContent = true) {
+      const dpr = window.devicePixelRatio || 1;
+      const targetW = Math.max(1, Math.round(window.innerWidth * dpr));
+      const targetH = Math.max(1, Math.round(window.innerHeight * dpr));
+
+      if (collageBaseCanvas.width === targetW && collageBaseCanvas.height === targetH) {
+        return;
+      }
+
+      let tempCanvas = null;
+      if (preserveContent && collageBaseCanvas.width > 0 && collageBaseCanvas.height > 0) {
+        tempCanvas = document.createElement('canvas');
+        tempCanvas.width = collageBaseCanvas.width;
+        tempCanvas.height = collageBaseCanvas.height;
+        tempCanvas.getContext('2d').drawImage(collageBaseCanvas, 0, 0);
+      }
+
+      collageBaseCanvas.width = targetW;
+      collageBaseCanvas.height = targetH;
+
+      if (tempCanvas) {
+        collageCtx.drawImage(tempCanvas, 0, 0, targetW, targetH);
+      }
+    }
+
+    function clearCollageCanvas() {
+      collageCtx.clearRect(0, 0, collageBaseCanvas.width, collageBaseCanvas.height);
+    }
+
+    function bakePolaroidToCanvas(item) {
+      if (!collageCtx || !item || !item.imgElement) return;
+      const dpr = window.devicePixelRatio || 1;
+      const cx = item.targetX + item.totalW / 2;
+      const cy = item.targetY + item.totalH / 2;
+      const rad = (item.targetRot * Math.PI) / 180;
+      const halfW = item.totalW / 2;
+      const halfH = item.totalH / 2;
+      const imgW = item.totalW - POLAROID_PAD_SIDE * 2;
+      const imgH = item.totalH - POLAROID_PAD_TOP - POLAROID_PAD_BOTTOM;
+
+      collageCtx.save();
+      collageCtx.scale(dpr, dpr);
+      collageCtx.translate(cx, cy);
+      collageCtx.rotate(rad);
+
+      collageCtx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+      collageCtx.shadowBlur = 24;
+      collageCtx.shadowOffsetX = 0;
+      collageCtx.shadowOffsetY = 8;
+      collageCtx.fillStyle = '#ffffff';
+      collageCtx.beginPath();
+      if (collageCtx.roundRect) {
+        collageCtx.roundRect(-halfW, -halfH, item.totalW, item.totalH, 3);
+      } else {
+        collageCtx.rect(-halfW, -halfH, item.totalW, item.totalH);
+      }
+      collageCtx.fill();
+
+      collageCtx.shadowColor = 'transparent';
+      collageCtx.shadowBlur = 0;
+      collageCtx.shadowOffsetY = 0;
+      collageCtx.fillStyle = '#111111';
+      collageCtx.fillRect(-halfW + POLAROID_PAD_SIDE, -halfH + POLAROID_PAD_TOP, imgW, imgH);
+
+      try {
+        collageCtx.drawImage(
+          item.imgElement,
+          -halfW + POLAROID_PAD_SIDE,
+          -halfH + POLAROID_PAD_TOP,
+          imgW,
+          imgH
+        );
+      } catch (e) {}
+
+      collageCtx.restore();
+    }
+
+    // =========================================================================
+    // NETWORK FETCH & PARALLEL IMAGE PRELOADER
+    // =========================================================================
+    async function fetchNextPage(forceImmediate = false) {
+      if (isFetching) return;
+      const now = performance.now();
+      if (!forceImmediate && now < nextAllowedFetchTime) return;
+
+      isFetching = true;
+      nextAllowedFetchTime = now + MIN_API_COOLDOWN_MS;
+
+      try {
+        const res = await fetch("http://127.0.0.1:8088/api");
+        if (res.ok) {
+          const newPosts = await res.json();
+          if (Array.isArray(newPosts) && newPosts.length > 0) {
+            consecutiveEmptyFetches = 0;
+            nextAllowedFetchTime = performance.now() + MIN_API_COOLDOWN_MS;
+            postQueue.push(...newPosts);
+            pumpPreloader();
+          } else {
+            consecutiveEmptyFetches++;
+            const backoffMs = Math.min(30000, MIN_API_COOLDOWN_MS * Math.pow(2, consecutiveEmptyFetches));
+            nextAllowedFetchTime = performance.now() + backoffMs;
+          }
+        } else {
+          consecutiveEmptyFetches++;
+          const backoffMs = Math.min(30000, MIN_API_COOLDOWN_MS * Math.pow(2, consecutiveEmptyFetches));
+          nextAllowedFetchTime = performance.now() + backoffMs;
+        }
+      } catch (err) {
+        consecutiveEmptyFetches++;
+        const backoffMs = Math.min(30000, MIN_API_COOLDOWN_MS * Math.pow(2, consecutiveEmptyFetches));
+        nextAllowedFetchTime = performance.now() + backoffMs;
+      } finally {
+        isFetching = false;
+      }
+    }
+
+    function finalizePreloadedImage(img, gen) {
+      if (!inFlightImages.has(img)) return;
+      inFlightImages.delete(img);
+      activePreloadCount = Math.max(0, activePreloadCount - 1);
+
+      if (gen !== preloadGeneration) {
+        img.onload = null;
+        img.onerror = null;
+        img.src = '';
+        img.removeAttribute('src');
+        return;
+      }
+
+      const naturalW = img.naturalWidth || 1;
+      const naturalH = img.naturalHeight || 1;
+      readyImageQueue.push({
+        img: img,
+        aspect: naturalW / naturalH,
+        naturalW: naturalW,
+        naturalH: naturalH
+      });
+
+      if (DISPLAY_MODE === 'scroll') {
+        fillScrollBuffer();
+      }
+      pumpPreloader();
+    }
+
+    function pumpPreloader() {
+      if (postQueue.length < LOW_QUEUE_THRESHOLD && !isFetching && performance.now() >= nextAllowedFetchTime) {
+        fetchNextPage();
+      }
+
+      while (
+        activePreloadCount < MAX_CONCURRENT_LOADS &&
+        (readyImageQueue.length + activePreloadCount) < PRELOAD_BUFFER_TARGET &&
+        postQueue.length > 0
+      ) {
+        const post = postQueue.shift();
+        if (!post || !post.proxy_url) continue;
+
+        activePreloadCount++;
+        const gen = preloadGeneration;
+        const img = new Image();
+        img.decoding = 'async';
+        inFlightImages.add(img);
+
+        img.onload = () => {
+          if (typeof img.decode === 'function') {
+            img.decode()
+              .then(() => finalizePreloadedImage(img, gen))
+              .catch(() => finalizePreloadedImage(img, gen));
+          } else {
+            finalizePreloadedImage(img, gen);
+          }
+        };
+
+        img.onerror = () => {
+          if (inFlightImages.has(img)) {
+            inFlightImages.delete(img);
+            activePreloadCount = Math.max(0, activePreloadCount - 1);
+          }
+          img.onload = null;
+          img.onerror = null;
+          img.src = '';
+          img.removeAttribute('src');
+          setTimeout(pumpPreloader, 400);
+        };
+
+        img.src = post.proxy_url;
+      }
+    }
+
+    function destroyItem(item) {
+      if (!item) return;
+      const el = item.element;
+      const img = item.imgElement || (el && el.tagName === 'IMG' ? el : (el ? el.querySelector('img') : null));
+      if (img) {
+        img.onload = null;
+        img.onerror = null;
+        img.src = '';
+        img.removeAttribute('src');
+      }
+      if (el && el.parentNode) {
+        el.parentNode.removeChild(el);
+      }
+      item.element = null;
+      item.imgElement = null;
+    }
+
+    function clearReadyQueue() {
+      preloadGeneration++;
+
+      for (const img of inFlightImages) {
+        img.onload = null;
+        img.onerror = null;
+        img.src = '';
+        img.removeAttribute('src');
+      }
+      inFlightImages.clear();
+      activePreloadCount = 0;
+
+      while (readyImageQueue.length > 0) {
+        const preloaded = readyImageQueue.shift();
+        if (preloaded && preloaded.img) {
+          preloaded.img.onload = null;
+          preloaded.img.onerror = null;
+          preloaded.img.src = '';
+          preloaded.img.removeAttribute('src');
+        }
+      }
+    }
+
+    function clearStageAll() {
+      for (let i = 0; i < activeItems.length; i++) destroyItem(activeItems[i]);
+      for (let i = 0; i < collageItems.length; i++) destroyItem(collageItems[i]);
+      for (let i = 0; i < fallingItems.length; i++) destroyItem(fallingItems[i]);
+
+      activeItems = [];
+      collageItems = [];
+      fallingItems = [];
+
+      clearCollageCanvas();
+      coverageGrid.fill(0);
+      coveredCellCount = 0;
+      screenFullyCovered = false;
+      nextZIndex = 1;
+      timeSinceLastDrop = 999;
+    }
+
+    function switchDisplayMode(newMode) {
+      if (newMode !== 'scroll' && newMode !== 'collage') return;
+      if (DISPLAY_MODE === newMode) return;
+      DISPLAY_MODE = newMode;
+      clearStageAll();
+
+      if (DISPLAY_MODE === 'collage') {
+        resizeCollageCanvas(false);
+        collageBaseCanvas.style.display = 'block';
+      } else {
+        collageBaseCanvas.style.display = 'none';
+      }
+
+      pumpPreloader();
+      if (DISPLAY_MODE === 'scroll') {
+        fillScrollBuffer();
+      }
+    }
+
+    // =========================================================================
+    // MODE 1: INFINITE SCROLLING SLIDESHOW (LEFT & RIGHT)
+    // =========================================================================
+    function getRightmostEdge() {
+      if (activeItems.length === 0) return 0;
+      const last = activeItems[activeItems.length - 1];
+      return last.x + last.width;
+    }
+
+    function getLeftmostEdge() {
+      if (activeItems.length === 0) return window.innerWidth;
+      return activeItems[0].x;
+    }
+
+    function fillScrollBuffer() {
+      if (DISPLAY_MODE !== 'scroll') return;
+
+      const screenW = window.innerWidth;
+      const screenH = window.innerHeight;
+      if (screenW <= 0 || screenH <= 0) return;
+
+      let spawnedAny = false;
+
+      if (SCROLL_DIRECTION === 'left') {
+        while (readyImageQueue.length > 0 && getRightmostEdge() < screenW * 3.5) {
+          const ready = readyImageQueue.shift();
+          const img = ready.img;
+          const computedWidth = Math.max(1, ready.aspect * screenH);
+
+          const spawnX = activeItems.length === 0 ? 0 : getRightmostEdge() + GAP;
+
+          img.className = 'slide-item';
+          img.style.transform = `translate3d(${spawnX}px, 0, 0)`;
+          stage.appendChild(img);
+
+          activeItems.push({
+            element: img,
+            x: spawnX,
+            width: computedWidth,
+            aspect: ready.aspect
+          });
+          spawnedAny = true;
+        }
+      } else {
+        while (readyImageQueue.length > 0 && getLeftmostEdge() > -screenW * 2.5) {
+          const ready = readyImageQueue.shift();
+          const img = ready.img;
+          const computedWidth = Math.max(1, ready.aspect * screenH);
+
+          const spawnX = activeItems.length === 0
+            ? (screenW - computedWidth)
+            : (getLeftmostEdge() - computedWidth - GAP);
+
+          img.className = 'slide-item';
+          img.style.transform = `translate3d(${spawnX}px, 0, 0)`;
+          stage.appendChild(img);
+
+          activeItems.unshift({
+            element: img,
+            x: spawnX,
+            width: computedWidth,
+            aspect: ready.aspect
+          });
+          spawnedAny = true;
+        }
+      }
+
+      if (spawnedAny || (readyImageQueue.length === 0 && activePreloadCount === 0)) {
+        pumpPreloader();
+      }
+    }
+
+    function relayoutScrollItems() {
+      if (DISPLAY_MODE !== 'scroll' || activeItems.length === 0) return;
+      const screenHeight = window.innerHeight;
+      if (screenHeight <= 0) return;
+
+      let runningX = activeItems[0].x;
+      for (let i = 0; i < activeItems.length; i++) {
+        const item = activeItems[i];
+        item.width = Math.max(1, item.aspect * screenHeight);
+        item.x = runningX;
+        item.element.style.transform = `translate3d(${item.x}px, 0, 0)`;
+        runningX += item.width + GAP;
+      }
+      fillScrollBuffer();
+    }
+
+    function updateScrollMode(deltaTime) {
+      const moveBy = SCROLL_SPEED * deltaTime;
+      let removedAny = false;
+
+      if (SCROLL_DIRECTION === 'left') {
+        for (let i = 0; i < activeItems.length; i++) {
+          const item = activeItems[i];
+          item.x -= moveBy;
+          item.element.style.transform = `translate3d(${item.x}px, 0, 0)`;
+        }
+        while (activeItems.length > 0 && (activeItems[0].x + activeItems[0].width) < -100) {
+          destroyItem(activeItems.shift());
+          removedAny = true;
+        }
+      } else {
+        for (let i = 0; i < activeItems.length; i++) {
+          const item = activeItems[i];
+          item.x += moveBy;
+          item.element.style.transform = `translate3d(${item.x}px, 0, 0)`;
+        }
+        while (activeItems.length > 0 && activeItems[activeItems.length - 1].x > window.innerWidth + 100) {
+          destroyItem(activeItems.pop());
+          removedAny = true;
+        }
+      }
+
+      if (removedAny || readyImageQueue.length > 0 || activeItems.length === 0) {
+        fillScrollBuffer();
+      }
+    }
+
+    // =========================================================================
+    // MODE 2: CONTINUOUS STACKING POLAROID COLLAGE
+    // =========================================================================
+    function chooseSmartLandingSpot(totalW, totalH) {
+      const sw = window.innerWidth;
+      const sh = window.innerHeight;
+      const cellW = sw / GRID_COLS;
+      const cellH = sh / GRID_ROWS;
+
+      if (!screenFullyCovered && Math.random() < 0.82) {
+        const uncoveredIndices = [];
+        for (let i = 0; i < TOTAL_GRID_CELLS; i++) {
+          if (coverageGrid[i] === 0) uncoveredIndices.push(i);
+        }
+        if (uncoveredIndices.length > 0) {
+          const chosenIdx = uncoveredIndices[Math.floor(Math.random() * uncoveredIndices.length)];
+          const col = chosenIdx % GRID_COLS;
+          const row = Math.floor(chosenIdx / GRID_COLS);
+
+          const jitterX = (Math.random() - 0.5) * cellW * 3;
+          const jitterY = (Math.random() - 0.5) * cellH * 3;
+          const centerX = (col + 0.5) * cellW + jitterX;
+          const centerY = (row + 0.5) * cellH + jitterY;
+
+          return {
+            x: centerX - totalW / 2,
+            y: centerY - totalH / 2
+          };
+        }
+      }
+
+      if (collageItems.length > 0 && Math.random() < 0.35) {
+        const oldestId = collageItems[0].id;
+        const oldestCells = [];
+        for (let i = 0; i < TOTAL_GRID_CELLS; i++) {
+          if (coverageGrid[i] === oldestId) oldestCells.push(i);
+        }
+        if (oldestCells.length > 0) {
+          const chosenIdx = oldestCells[Math.floor(Math.random() * oldestCells.length)];
+          const col = chosenIdx % GRID_COLS;
+          const row = Math.floor(chosenIdx / GRID_COLS);
+
+          const jitterX = (Math.random() - 0.5) * totalW * 0.35;
+          const jitterY = (Math.random() - 0.5) * totalH * 0.35;
+          const centerX = (col + 0.5) * cellW + jitterX;
+          const centerY = (row + 0.5) * cellH + jitterY;
+
+          return {
+            x: centerX - totalW / 2,
+            y: centerY - totalH / 2
+          };
+        }
+      }
+
+      const marginX = totalW * 0.2;
+      const marginY = totalH * 0.2;
+      const x = -marginX + Math.random() * (sw - totalW + marginX * 2);
+      const y = -marginY + Math.random() * (sh - totalH + marginY * 2);
+      return { x, y };
+    }
+
+    function markCoverageForLandedItem(item) {
+      const sw = window.innerWidth;
+      const sh = window.innerHeight;
+      if (sw <= 0 || sh <= 0) return;
+
+      const cellW = sw / GRID_COLS;
+      const cellH = sh / GRID_ROWS;
+
+      const cx = item.targetX + item.totalW / 2;
+      const cy = item.targetY + item.totalH / 2;
+
+      const halfW = Math.max(10, item.totalW / 2 - COVERAGE_INSET_PX);
+      const halfH = Math.max(10, item.totalH / 2 - COVERAGE_INSET_PX);
+
+      const rad = (-item.targetRot * Math.PI) / 180;
+      const cosA = Math.cos(rad);
+      const sinA = Math.sin(rad);
+
+      for (let r = 0; r < GRID_ROWS; r++) {
+        const py = (r + 0.5) * cellH - cy;
+        for (let c = 0; c < GRID_COLS; c++) {
+          const px = (c + 0.5) * cellW - cx;
+          const localX = px * cosA - py * sinA;
+          const localY = px * sinA + py * cosA;
+
+          if (Math.abs(localX) <= halfW && Math.abs(localY) <= halfH) {
+            const idx = r * GRID_COLS + c;
+            if (coverageGrid[idx] === 0) {
+              coveredCellCount++;
+            }
+            coverageGrid[idx] = item.id;
+          }
+        }
+      }
+
+      if (coveredCellCount >= TOTAL_GRID_CELLS * 0.985) {
+        screenFullyCovered = true;
+      }
+    }
+
+    function pruneCollageStackIfNeeded() {
+      const visibleIds = new Set(coverageGrid);
+      const remaining = [];
+
+      for (let i = 0; i < collageItems.length; i++) {
+        const item = collageItems[i];
+        if (!visibleIds.has(item.id)) {
+          item.occludedDrops = (item.occludedDrops || 0) + 1;
+        } else {
+          item.occludedDrops = 0;
+        }
+
+        if (item.occludedDrops >= OCCLUDED_GRACE_DROPS) {
+          bakePolaroidToCanvas(item);
+          destroyItem(item);
+        } else {
+          remaining.push(item);
+        }
+      }
+      collageItems = remaining;
+
+      while (collageItems.length > MAX_LIVE_COLLAGE_DOM) {
+        const oldest = collageItems.shift();
+        bakePolaroidToCanvas(oldest);
+        destroyItem(oldest);
+      }
+    }
+
+    function spawnNextCollageItem() {
+      if (DISPLAY_MODE !== 'collage' || readyImageQueue.length === 0) {
+        pumpPreloader();
+        return false;
+      }
+      if (window.innerWidth <= 0 || window.innerHeight <= 0) {
+        return false;
+      }
+
+      const ready = readyImageQueue.shift();
+      pumpPreloader();
+
+      const img = ready.img;
+      const aspect = ready.aspect;
+
+      const wrapper = document.createElement('div');
+      wrapper.className = 'polaroid-item falling';
+      wrapper.style.opacity = '0';
+
+      img.className = 'polaroid-img';
+      wrapper.appendChild(img);
+      stage.appendChild(wrapper);
+
+      const minS = Math.min(COLLAGE_MIN_SIZE, COLLAGE_MAX_SIZE);
+      const maxS = Math.max(COLLAGE_MIN_SIZE, COLLAGE_MAX_SIZE);
+      const randomBaseSize = minS + Math.random() * (maxS - minS);
+
+      let imgW, imgH;
+      if (aspect >= 1) {
+        imgW = randomBaseSize;
+        imgH = randomBaseSize / aspect;
+      } else {
+        imgH = randomBaseSize;
+        imgW = randomBaseSize * aspect;
+      }
+
+      const totalW = Math.round(imgW + POLAROID_PAD_SIDE * 2);
+      const totalH = Math.round(imgH + POLAROID_PAD_TOP + POLAROID_PAD_BOTTOM);
+
+      wrapper.style.width = `${totalW}px`;
+      wrapper.style.height = `${totalH}px`;
+      wrapper.style.zIndex = String(nextZIndex++);
+
+      const landing = chooseSmartLandingSpot(totalW, totalH);
+      const targetRot = (Math.random() - 0.5) * 28;
+      const startRot = targetRot + (Math.random() - 0.5) * 30;
+
+      const startX = (window.innerWidth - totalW) * 0.5 + (landing.x - (window.innerWidth - totalW) * 0.5) * 0.35;
+      const startY = (window.innerHeight - totalH) * 0.5 + (landing.y - (window.innerHeight - totalH) * 0.5) * 0.35;
+
+      const fallDuration = Math.max(0.25, 1.15 / Math.max(0.2, COLLAGE_DROP_SPEED));
+
+      fallingItems.push({
+        id: nextPolaroidId++,
+        element: wrapper,
+        imgElement: img,
+        totalW,
+        totalH,
+        startX,
+        startY,
+        targetX: landing.x,
+        targetY: landing.y,
+        startScale: 3.6,
+        targetScale: 1.0,
+        startRot,
+        targetRot,
+        elapsed: 0,
+        duration: fallDuration,
+        occludedDrops: 0
+      });
+
+      return true;
+    }
+
+    function updateCollageMode(deltaTime) {
+      timeSinceLastDrop += deltaTime;
+      const spawnInterval = Math.max(0.25, 1.6 / Math.max(0.2, COLLAGE_DROP_SPEED));
+
+      if (timeSinceLastDrop >= spawnInterval) {
+        if (spawnNextCollageItem()) {
+          timeSinceLastDrop = 0;
+        } else {
+          timeSinceLastDrop = spawnInterval - 0.25;
+        }
+      }
+
+      for (let i = fallingItems.length - 1; i >= 0; i--) {
+        const item = fallingItems[i];
+        item.elapsed += deltaTime;
+        const progress = Math.min(item.elapsed / item.duration, 1.0);
+        const ease = 1 - Math.pow(1 - progress, 3);
+
+        const curX = item.startX + (item.targetX - item.startX) * ease;
+        const curY = item.startY + (item.targetY - item.startY) * ease;
+        const curScale = item.startScale + (item.targetScale - item.startScale) * ease;
+        const curRot = item.startRot + (item.targetRot - item.startRot) * ease;
+        const curOpacity = Math.min(progress / 0.15, 1.0);
+
+        item.element.style.opacity = curOpacity.toFixed(3);
+        item.element.style.transform = `translate3d(${curX.toFixed(1)}px, ${curY.toFixed(1)}px, 0) scale(${curScale.toFixed(4)}) rotate(${curRot.toFixed(2)}deg)`;
+
+        if (progress >= 1.0) {
+          item.element.classList.remove('falling');
+          item.element.style.willChange = 'auto';
+          item.element.style.opacity = '1';
+          item.element.style.transform = `translate3d(${item.targetX.toFixed(1)}px, ${item.targetY.toFixed(1)}px, 0) scale(1) rotate(${item.targetRot.toFixed(2)}deg)`;
+
+          fallingItems.splice(i, 1);
+          collageItems.push(item);
+
+          markCoverageForLandedItem(item);
+          pruneCollageStackIfNeeded();
+        }
+      }
+    }
+
+    // =========================================================================
+    // MAIN ANIMATION LOOP & RESIZE HANDLING
+    // =========================================================================
+    window.addEventListener('resize', () => {
+      if (DISPLAY_MODE === 'scroll') {
+        relayoutScrollItems();
+      } else {
+        resizeCollageCanvas(true);
+        coverageGrid.fill(0);
+        coveredCellCount = 0;
+        screenFullyCovered = false;
+        for (let i = 0; i < collageItems.length; i++) {
+          markCoverageForLandedItem(collageItems[i]);
+        }
+      }
+    });
+
+    function animate(currentTime) {
+      const rawDelta = (currentTime - lastTime) / 1000;
+      const deltaTime = Math.min(Math.max(rawDelta, 0), 0.1);
+      lastTime = currentTime;
+
+      if (DISPLAY_MODE === 'scroll') {
+        updateScrollMode(deltaTime);
+      } else {
+        updateCollageMode(deltaTime);
+      }
+
+      requestAnimationFrame(animate);
+    }
+
+    // =========================================================================
+    // EPOCH POLLING (BACKEND SEARCH REFRESH)
+    // =========================================================================
+    setInterval(async () => {
+      try {
+        const res = await fetch("http://127.0.0.1:8088/epoch");
+        if (res.ok) {
+          const data = await res.json();
+          if (currentEpoch === null) {
+            currentEpoch = data.epoch;
+            return;
+          }
+
+          if (data.epoch !== currentEpoch) {
+            currentEpoch = data.epoch;
+            postQueue = [];
+            consecutiveEmptyFetches = 0;
+            nextAllowedFetchTime = 0;
+            clearReadyQueue();
+
+            if (DISPLAY_MODE === 'scroll') {
+              const visibleItems = [];
+              for (let i = 0; i < activeItems.length; i++) {
+                const item = activeItems[i];
+                const isVisible = (item.x + item.width > 0) && (item.x < window.innerWidth);
+                if (isVisible) {
+                  visibleItems.push(item);
+                } else {
+                  destroyItem(item);
+                }
+              }
+              activeItems = visibleItems;
+              await fetchNextPage(true);
+              fillScrollBuffer();
+            } else {
+              await fetchNextPage(true);
+            }
+          }
+        }
+      } catch (e) {}
+    }, 1000);
+
+    // =========================================================================
+    // WALLPAPER ENGINE PROPERTY LISTENER
+    // =========================================================================
+    window.wallpaperPropertyListener = {
+      applyUserProperties: function(properties) {
+        if (properties.schemecolor && properties.schemecolor.value) {
+          const parts = String(properties.schemecolor.value).trim().split(/\s+/).map(Number);
+          if (parts.length >= 3 && !parts.some(isNaN)) {
+            const r = Math.round(Math.min(1, Math.max(0, parts[0])) * 255);
+            const g = Math.round(Math.min(1, Math.max(0, parts[1])) * 255);
+            const b = Math.round(Math.min(1, Math.max(0, parts[2])) * 255);
+            document.body.style.backgroundColor = `rgb(${r}, ${g}, ${b})`;
+          }
+        }
+        if (properties.scrolldirection) {
+          const newDir = properties.scrolldirection.value === 'right' ? 'right' : 'left';
+          if (SCROLL_DIRECTION !== newDir) {
+            SCROLL_DIRECTION = newDir;
+            if (DISPLAY_MODE === 'scroll') fillScrollBuffer();
+          }
+        }
+        if (properties.scrollspeed) {
+          SCROLL_SPEED = Number(properties.scrollspeed.value) || 120;
+        }
+        if (properties.gapsize !== undefined) {
+          GAP = Number(properties.gapsize.value);
+          if (DISPLAY_MODE === 'scroll') relayoutScrollItems();
+        }
+        if (properties.dropspeed) {
+          COLLAGE_DROP_SPEED = Number(properties.dropspeed.value) || 1.0;
+        }
+        if (properties.minsize) {
+          COLLAGE_MIN_SIZE = Number(properties.minsize.value) || 220;
+          if (COLLAGE_MIN_SIZE > COLLAGE_MAX_SIZE) COLLAGE_MAX_SIZE = COLLAGE_MIN_SIZE;
+        }
+        if (properties.maxsize) {
+          COLLAGE_MAX_SIZE = Number(properties.maxsize.value) || 440;
+          if (COLLAGE_MAX_SIZE < COLLAGE_MIN_SIZE) COLLAGE_MIN_SIZE = COLLAGE_MAX_SIZE;
+        }
+        if (properties.displaymode) {
+          switchDisplayMode(properties.displaymode.value);
+        }
+      }
+    };
+
+    async function init() {
+      resizeCollageCanvas(false);
+      try {
+        const propRes = await fetch("http://127.0.0.1:8088/properties");
+        if (propRes.ok) {
+          const props = await propRes.json();
+          if (window.wallpaperPropertyListener && window.wallpaperPropertyListener.applyUserProperties) {
+            window.wallpaperPropertyListener.applyUserProperties(props);
+          }
+        }
+      } catch (e) {}
+
+      await fetchNextPage(true);
+      requestAnimationFrame(animate);
+    }
+
+    window.onload = init;
+  </script>
+</body>
+</html>
