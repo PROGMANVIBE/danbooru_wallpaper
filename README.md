@@ -1,5 +1,5 @@
 # Danbooru Wallpaper Application
-A standalone Windows app that streams Danbooru art and GIFs to your desktop. Powered by an authenticated local proxy to bypass rate limits, it features a floating search widget with live tag autocomplete, bookmarks, smooth media caching, and tray controls.
+A standalone Windows app that streams Danbooru art, GIFs, and MP4 files (sound suppressed) to your desktop. Powered by an authenticated local proxy to bypass rate limits, it features a floating search widget with live tag autocomplete, bookmarks, smooth media caching, auto looping video, locally stored credentials, application logs, multi-monitor support, and tray controls.
 
 # FEATURES
 
@@ -9,7 +9,11 @@ A standalone Windows app that streams Danbooru art and GIFs to your desktop. Pow
 
 **Live Tag Suggestions**: Automatically queries Danbooru as you type to display the top 5 matching tags along with their post counts.
 
+**Multi-Monitor Support**: Automatically identifies all monitors and allows for individual display settings per monitor.
+
 **Search Bookmarks**: Save frequently used searches and recall or delete them via a drop-down menu.
+
+**Application Pause and Animation Pause**: Pause the whole application operations or just pause the displayed content at anytime. 
 
 **Local Media Proxy (127.0.0.1:8088)**: Streams images through an internal HTTP proxy with valid Danbooru headers, preventing Cloudflare blocks and rate limits.
 
@@ -19,7 +23,7 @@ A standalone Windows app that streams Danbooru art and GIFs to your desktop. Pow
 
 **Aggregated Real-Time Logs**: A built-in, opaque diagnostic window that captures server events, image proxying, API queries, and errors without crowding the screen.
 
-**Secure Credential Storage**: Automatically saves your credentials locally in config.json rather than hardcoding them into the application.
+**Secure Credential Storage**: Automatically creates an AppData folder for the currently logged in user and saves credentials locally in config.json rather than hardcoding them into the application. This folder can be manually deleted at anytime and the application will recreate it the next time the wallpaper is run. 
 
 
 # HOW TO USE THE PROGRAM
