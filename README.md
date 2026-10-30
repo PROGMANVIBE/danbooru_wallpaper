@@ -38,9 +38,7 @@ A standalone Windows app that streams Danbooru art, GIFs, and MP4 files (sound s
 
 **Minimizing to Tray**: Click the vertical bar on the far-left edge of the search widget, press Escape when no menus are open, or right-click the system tray icon and select Show Search Bar to toggle visibility.
 
-**Accessing Settings**: Right-click the cardboard box tray icon and select Settings to update your Danbooru Username, User ID, or API Key at any time.
-
-**Checking Logs**: Right-click the tray icon and select Logs to view background operations, including media routing and client pings.
+**Accessing Settings**: Right-click the cardboard box tray icon and select Settings to update your Danbooru Username, User ID, or API Key at any time. Settings also includes all display settings including monitor selection, and streaming options. 
 
 
 # REQUIREMENTS
