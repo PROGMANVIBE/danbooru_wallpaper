@@ -28,7 +28,7 @@ A standalone Windows app that streams Danbooru art, GIFs, and MP4 files (sound s
 
 # HOW TO USE THE PROGRAM
 
-**Searching Tags**: Type any standard Danbooru tag combination into the search bar (the default search is: scenery no_humans order:score) and press Enter to queue the search. Highly suggested to have a paid account in order to have more search tags and API requests.
+**Searching Tags**: Type any standard Danbooru tag combination into the search bar (the default search is: scenery no_humans) and press the Refresh button to queue the search. All files streamed are shuffled per page before being displayed; this eliminates the monotony of seeing the exact same files in the same order every time a same search is done. Highly suggested to have a paid account in order to have more search tags and API requests. If you wanted to view all your favorites you can put "ordfav:USER_NAME" into the search bar. 
 
 **Immediate Refresh**: Press Shift + Enter in the input field or click the refresh button (⟳) on the bar to immediately clear the image buffer, increment the search epoch, and fetch new images.
 
