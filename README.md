@@ -17,7 +17,7 @@ A standalone Windows app that streams Danbooru art, GIFs, and MP4 files (sound s
 
 **Local Media Proxy (127.0.0.1:8088)**: Streams images through an internal HTTP proxy with valid Danbooru headers, preventing Cloudflare blocks and rate limits.
 
-**Buffered & Shuffled Playback**: Pre-fetches batches of posts (images and gifs only) into memory, shuffles them randomly per page, and filters out video extensions to ensure smooth transitions. 
+**Buffered & Shuffled Playback**: Pre-fetches batches of posts (images, gifs, and mp4 files with all sound suppressed) into memory, shuffles them randomly per page, and filters out video extensions to ensure smooth transitions. 
 
 **System Tray Control**: Runs unobtrusively in the Windows taskbar tray with a custom cardboard box icon, allowing you to hide/show the search bar, update credentials, view logs, or exit cleanly.
 
